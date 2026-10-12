@@ -1,0 +1,559 @@
+# ServiceNow Incident CRUD API Testing with Postman
+
+## Table of Contents
+
+1.  Learning Objectives
+2.  Theory and Fundamentals
+3.  Authentication: OAuth 2.0
+4.  ServiceNow Table API
+5.  CRUD Workflow
+6.  Postman Setup
+7.  Request Examples
+8.  Environment and Collection Variables
+9.  Validations and Test Scripts
+10. Troubleshooting
+11. Best Practices
+12. Interview Questions and Answers
+
+## 1. Learning Objectives
+
+By the end of this guide, you should be able to: - Explain REST APIs,
+HTTP methods, status codes, authentication, and authorization. - Obtain
+an OAuth access token from ServiceNow. - Create, retrieve, update, and
+delete an incident using the ServiceNow Table API. - Chain requests
+using collection/environment variables. - Validate status codes and
+response bodies in Postman.
+
+## 2. Theory and Fundamentals
+
+### What is an API?
+
+An Application Programming Interface (API) allows two software systems
+to communicate through a defined contract. A REST API exposes resources
+through URLs and commonly uses HTTP methods to operate on those
+resources.
+
+### What is REST?
+
+REST is an architectural style for network-based applications. REST APIs
+commonly use: - Resources identified by URLs. - HTTP methods to describe
+operations. - JSON request and response bodies. - HTTP status codes to
+communicate outcomes.
+
+### What is an endpoint?
+
+An endpoint is a URL for a particular resource or operation. For
+example:
+
+`https://<instance>.service-now.com/api/now/table/incident`
+
+This is the ServiceNow Table API endpoint for incident records.
+
+### What is CRUD?
+
+  Operation   HTTP method    Purpose
+  ----------- -------------- ---------------------
+  Create      POST           Create a new record
+  Read        GET            Retrieve a record
+  Update      PUT or PATCH   Update a record
+  Delete      DELETE         Delete a record
+
+`PUT` is generally used to replace a resource representation, while
+`PATCH` is commonly used for a partial update. ServiceNow Table API
+supports record updates using these methods; send only the fields you
+intend to change and confirm the behavior for your endpoint/version.
+
+### Common status codes
+
+  Status   Meaning             Typical use
+  -------- ------------------- ---------------------------------------------
+  200      OK                  Successful GET or update
+  201      Created             Successful creation
+  204      No Content          Successful operation with no response body
+  400      Bad Request         Invalid input or malformed request
+  401      Unauthorized        Missing, invalid, or expired authentication
+  403      Forbidden           Authenticated user lacks permission
+  404      Not Found           Incorrect endpoint or record not found
+  429      Too Many Requests   Rate limit/throttling
+  5xx      Server error        Server-side failure
+
+Actual responses can vary by endpoint and configuration. Assert the
+status expected for your instance rather than assuming every successful
+request returns the same code.
+
+### Headers and body
+
+-   `Content-Type: application/json` tells the server that the request
+    body is JSON.
+-   `Authorization: Bearer <access_token>` sends the OAuth access token.
+-   A request body contains fields to create or update, such as
+    `short_description`.
+
+## 3. Authentication: OAuth 2.0
+
+OAuth 2.0 lets a client obtain an access token and present it when
+calling a protected API. In the sample flow, the token endpoint is:
+
+`https://<instance>.service-now.com/oauth_token.do`
+
+The token request uses `application/x-www-form-urlencoded` fields such
+as: - `client_id` - `client_secret` - `grant_type` - `username` -
+`password`
+
+The `password` grant type is a legacy OAuth grant and may be disabled or
+disallowed by organizational policy. Use it only when your ServiceNow
+configuration explicitly supports it. Prefer an approved modern flow
+(for example, authorization code or client credentials where supported
+and appropriate) for new implementations.
+
+A successful token response commonly contains `access_token`,
+`token_type`, and `expires_in`. Send the access token in later API
+calls:
+
+`Authorization: Bearer <access_token>`
+
+**Security note:** The code shared for this exercise contains
+credential-like values. Treat exposed client secrets and passwords as
+compromised: rotate/revoke them, and never commit them to source control
+or share them in screenshots. This guide intentionally uses
+placeholders.
+
+## 4. ServiceNow Table API
+
+The Table API allows authorized users and integrations to query and
+manipulate records in ServiceNow tables.
+
+Incident resource: - Collection: `/api/now/table/incident` - Individual
+record: `/api/now/table/incident/<sys_id>`
+
+`sys_id` is the unique identifier of a ServiceNow record. Store the
+`sys_id` returned by the create response to retrieve, update, and delete
+that exact incident.
+
+Example create payload:
+
+``` json
+{
+  "short_description": "VDI issue generated by API test"
+}
+```
+
+## 5. CRUD Workflow
+
+1.  Request an OAuth token.
+2.  Save `access_token` to a Postman variable.
+3.  Create an incident using POST.
+4.  Extract `result.sys_id` and save it to a variable.
+5.  Retrieve the incident using GET and the saved `sys_id`.
+6.  Update the incident using PUT or PATCH.
+7.  Delete the incident using DELETE.
+8.  Verify deletion with a GET request and check the expected not-found
+    behavior for your instance.
+
+Run these requests in order. A collection runner can execute the
+sequence.
+
+## 6. Postman Setup
+
+### Create an environment
+
+Create an environment such as `ServiceNow Dev` with these variables:
+
+  --------------------------------------------------------------------------------------
+  Variable                Initial value                          Purpose
+  ----------------------- -------------------------------------- -----------------------
+  `baseUrl`               `https://<instance>.service-now.com`   Instance URL
+
+  `clientId`              `<client-id>`                          OAuth client ID
+
+  `clientSecret`          `<client-secret>`                      OAuth client secret
+
+  `username`              `<username>`                           Service account/user
+
+  `password`              `<password>`                           Password, if using an
+                                                                 approved password grant
+
+  `accessToken`           blank                                  Token returned by OAuth
+
+  `incidentSysId`         blank                                  Created incident's
+                                                                 `sys_id`
+  --------------------------------------------------------------------------------------
+
+Use Postman's secret/sensitive variable support where available. Do not
+export or commit real secrets. Prefer a managed secret store for team/CI
+use.
+
+### Request 1: Generate OAuth token
+
+-   Method: `POST`
+-   URL: `{{baseUrl}}/oauth_token.do`
+-   Header: `Content-Type: application/x-www-form-urlencoded`
+-   Body: select **x-www-form-urlencoded**
+
+  Key               Value
+  ----------------- --------------------
+  `client_id`       `{{clientId}}`
+  `client_secret`   `{{clientSecret}}`
+  `grant_type`      `password`
+  `username`        `{{username}}`
+  `password`        `{{password}}`
+
+In the **Tests** tab, save the token:
+
+``` javascript
+pm.test("Token request succeeds", function () {
+    pm.expect(pm.response.code).to.be.oneOf([200]);
+});
+
+const body = pm.response.json();
+pm.expect(body.access_token, "access_token should exist").to.be.a("string");
+pm.environment.set("accessToken", body.access_token);
+```
+
+If your OAuth configuration uses a different grant type, change the
+request according to the approved ServiceNow setup.
+
+## 7. Request Examples
+
+### Request 2: Create incident
+
+-   Method: `POST`
+-   URL: `{{baseUrl}}/api/now/table/incident`
+-   Headers:
+    -   `Content-Type: application/json`
+    -   `Authorization: Bearer {{accessToken}}`
+-   Body → raw → JSON:
+
+``` json
+{
+  "short_description": "VDI issue generated by Postman API test"
+}
+```
+
+Tests:
+
+``` javascript
+pm.test("Incident is created", function () {
+    pm.expect(pm.response.code).to.be.oneOf([200, 201]);
+});
+
+const body = pm.response.json();
+pm.expect(body.result).to.exist;
+pm.expect(body.result.sys_id).to.be.a("string");
+pm.environment.set("incidentSysId", body.result.sys_id);
+```
+
+### Request 3: Retrieve incident
+
+-   Method: `GET`
+-   URL: `{{baseUrl}}/api/now/table/incident/{{incidentSysId}}`
+-   Header: `Authorization: Bearer {{accessToken}}`
+
+Tests:
+
+``` javascript
+pm.test("Incident can be retrieved", function () {
+    pm.expect(pm.response.code).to.equal(200);
+});
+
+const body = pm.response.json();
+pm.expect(body.result.sys_id).to.equal(pm.environment.get("incidentSysId"));
+pm.expect(body.result.short_description).to.include("VDI issue");
+```
+
+### Request 4: Update incident
+
+-   Method: `PATCH` (or `PUT`, depending on your chosen approach)
+-   URL: `{{baseUrl}}/api/now/table/incident/{{incidentSysId}}`
+-   Headers:
+    -   `Content-Type: application/json`
+    -   `Authorization: Bearer {{accessToken}}`
+-   Body:
+
+``` json
+{
+  "short_description": "VDI issue generated by Postman API test - updated"
+}
+```
+
+Tests:
+
+``` javascript
+pm.test("Incident update succeeds", function () {
+    pm.expect(pm.response.code).to.be.oneOf([200, 204]);
+});
+```
+
+For a stronger check, send a GET request after the update and assert
+that the description contains `updated`.
+
+### Request 5: Delete incident
+
+-   Method: `DELETE`
+-   URL: `{{baseUrl}}/api/now/table/incident/{{incidentSysId}}`
+-   Header: `Authorization: Bearer {{accessToken}}`
+
+Tests:
+
+``` javascript
+pm.test("Incident deletion succeeds", function () {
+    pm.expect(pm.response.code).to.be.oneOf([200, 204]);
+});
+```
+
+### Request 6: Verify deletion
+
+-   Method: `GET`
+-   URL: `{{baseUrl}}/api/now/table/incident/{{incidentSysId}}`
+-   Header: `Authorization: Bearer {{accessToken}}`
+
+The expected response may be `404`, or a successful response with an
+empty/no matching result depending on API behavior and instance
+configuration. Inspect the actual response and assert the documented
+behavior for your instance. Do not treat every `404` as proof of
+deletion until you have ruled out a wrong URL or incorrect `sys_id`.
+
+## 8. Variables and Request Chaining
+
+-   **Environment variables** are scoped to the selected environment.
+-   **Collection variables** are scoped to a collection.
+-   **Global variables** are available broadly and are usually less
+    suitable for test-specific data.
+-   Use `pm.environment.set("incidentSysId", value)` to store the
+    created record ID.
+-   Use `{{incidentSysId}}` in later request URLs.
+
+For a reusable collection, environment variables are usually convenient
+for the instance and credentials. Collection variables can hold
+collection-specific values. Avoid storing credentials in shared or
+exported collections.
+
+## 9. Validations and Test Scripts
+
+A good API test checks more than the status code: - Expected status
+code. - Response content type and JSON structure. - Required fields such
+as `sys_id`. - Returned `sys_id` matches the requested record. - Updated
+field contains the new value. - Deleted record can no longer be
+retrieved according to the instance's documented behavior.
+
+Example response-time check:
+
+``` javascript
+pm.test("Response is under 3 seconds", function () {
+    pm.expect(pm.response.responseTime).to.be.below(3000);
+});
+```
+
+This is a simple threshold check, not a substitute for a proper
+performance test.
+
+## 10. Troubleshooting
+
+  -----------------------------------------------------------------------------
+  Symptom                 Possible causes         What to check
+  ----------------------- ----------------------- -----------------------------
+  400 from token endpoint Missing or incorrect    Use x-www-form-urlencoded and
+                          form fields             verify grant configuration
+
+  401                     Invalid/expired token   Generate a fresh token and
+                          or bad credentials      verify
+                                                  `Authorization: Bearer ...`
+
+  403                     Role/ACL restrictions   Confirm the user has
+                                                  permission to access the
+                                                  Incident table and fields
+
+  404                     Incorrect endpoint or   Check the instance URL, path,
+                          `sys_id`                and stored ID
+
+  415                     Wrong content type      Use form encoding for token
+                                                  request and JSON for Table
+                                                  API requests
+
+  `incidentSysId` is      Create test did not     Check Tests tab and selected
+  blank                   store it or wrong scope environment
+
+  Later requests run      Requests were run       Run the collection in
+  before token exists     individually/out of     sequence
+                          order                   
+
+  Update appears          Wrong method/body or    Inspect response body and
+  unsuccessful            insufficient permission retrieve the record again
+  -----------------------------------------------------------------------------
+
+## 11. Best Practices
+
+-   Use a dedicated test instance and test records.
+-   Use least-privilege integration accounts.
+-   Keep secrets out of source code, screenshots, and version control.
+-   Use variables for base URL, token, and record IDs.
+-   Add assertions for response status and important fields.
+-   Keep create/update/delete tests isolated from production data.
+-   Clean up records created during testing.
+-   Document the expected behavior of your ServiceNow instance,
+    especially deletion responses.
+-   Revoke or rotate credentials that have been exposed.
+
+## 12. Interview Questions and Answers
+
+### Beginner
+
+**1. What is API testing?**\
+API testing validates an application's endpoints, request/response data,
+status codes, authentication, authorization, and business rules without
+requiring the user interface.
+
+**2. What is the ServiceNow Table API?**\
+It is a REST API that lets authorized clients query and manipulate
+records in ServiceNow tables such as Incident.
+
+**3. What is the difference between POST and GET?**\
+POST commonly creates or submits data. GET retrieves data and should not
+modify server state.
+
+**4. What is the difference between PUT and PATCH?**\
+PUT generally replaces a resource representation; PATCH generally
+applies a partial update. Confirm endpoint-specific behavior.
+
+**5. What is `sys_id`?**\
+It is the unique identifier for a ServiceNow record, used to address
+that specific record in subsequent API calls.
+
+**6. What is an HTTP status code?**\
+It communicates the result of an HTTP request, such as 200 for success,
+401 for authentication failure, or 404 for a missing resource.
+
+### Intermediate
+
+**7. Explain the OAuth token flow in this example.**\
+Postman sends a form-encoded request to the OAuth token endpoint. The
+server validates the client and grant credentials and returns an access
+token. Postman stores the token and sends it as a Bearer token in later
+requests.
+
+**8. Why store the token in a variable?**\
+It avoids manually copying the token into every request and makes the
+collection repeatable. The token can be refreshed by rerunning the token
+request.
+
+**9. How do you chain create and retrieve requests?**\
+Extract `result.sys_id` from the create response, save it in an
+environment or collection variable, and use that variable in the
+retrieve URL.
+
+**10. What is the difference between authentication and
+authorization?**\
+Authentication establishes who the caller is. Authorization determines
+what that caller is allowed to do.
+
+**11. Why might a valid token receive 403?**\
+The user may be authenticated but lack a required role, table
+permission, field permission, or ACL access.
+
+**12. How do you validate an API response in Postman?**\
+Use the Tests tab to assert the status code, response schema/fields,
+values, and optionally response time.
+
+**13. Why might a GET request return 404?**\
+The endpoint may be incorrect, the record ID may be invalid, or the
+record may have been deleted. Verify the URL and `sys_id` before
+concluding.
+
+**14. What is the difference between environment and collection
+variables?**\
+Environment variables belong to the selected environment; collection
+variables belong to a particular collection and can be shared across its
+requests.
+
+### Scenario-based
+
+**15. Token generation succeeds but create returns 401. What do you
+check?**\
+Check that the latest token was saved, the variable is selected in the
+active environment, the header is exactly
+`Authorization: Bearer {{accessToken}}`, and the token has not expired.
+
+**16. Create succeeds but retrieve uses an empty ID. Why?**\
+The create response may have a different structure than expected, the
+Tests script may not have run, or the variable scope/name may be wrong.
+Inspect `result.sys_id` and verify the variable.
+
+**17. The API returns 403 only for a specific field. What could cause
+it?**\
+Field-level ACLs or permissions may restrict that field even if the user
+can access the table.
+
+**18. How would you verify an update?**\
+Assert the update response, then GET the record and verify the changed
+field value.
+
+**19. How would you verify deletion?**\
+Check the delete response and then attempt to retrieve the same record.
+Assert the documented not-found/empty-result behavior for the instance.
+
+**20. The token endpoint returns 400. What do you investigate?**\
+Verify the grant type, required form fields, client configuration,
+username/password if applicable, and whether the instance permits that
+grant type.
+
+### Advanced and best-practice questions
+
+**21. Is the OAuth password grant recommended for new integrations?**\
+Generally no; it is a legacy grant and is disabled or discouraged by
+many identity providers. Follow the organization's approved OAuth flow
+and ServiceNow configuration.
+
+**22. How do you avoid exposing credentials in Postman?**\
+Use sensitive variables or a secret manager, avoid committing exported
+environments, restrict workspace access, and rotate exposed credentials.
+
+**23. How would you make a CRUD collection repeatable?**\
+Use variables, create a record dynamically, store its `sys_id`, execute
+subsequent requests in order, validate each response, and clean up the
+record.
+
+**24. How is API testing different from UI testing?**\
+API testing validates service behavior directly and is usually faster
+and less brittle. UI testing validates the user-visible workflow and
+presentation. Both can complement each other.
+
+**25. How would you test negative scenarios?**\
+Test missing/invalid tokens, insufficient permissions, invalid field
+values, missing records, malformed payloads, and unsupported methods,
+asserting the expected error response.
+
+**26. What would you include in an API test report?**\
+Endpoint, method, test data, expected and actual status, response
+validation results, execution time, failure details, and environment.
+
+**27. How would you test pagination or filtering in the Table API?**\
+Use supported query parameters such as filtering and limits, then verify
+the returned records match the query and that pagination boundaries
+behave as expected. Confirm the exact parameters in the ServiceNow API
+documentation for your version.
+
+**28. What is the role of ACLs in ServiceNow API testing?**\
+Access Control Lists govern access to records and fields. API tests
+should validate both allowed and denied access for the intended user
+roles.
+
+## Quick Revision
+
+-   Token endpoint: `/oauth_token.do`
+-   Incident collection endpoint: `/api/now/table/incident`
+-   Single record endpoint: `/api/now/table/incident/<sys_id>`
+-   Create: POST; Read: GET; Update: PUT/PATCH; Delete: DELETE
+-   Token header: `Authorization: Bearer <token>`
+-   Save the create response's `result.sys_id` and reuse it for later
+    requests.
+-   Never place real credentials in source code or shared files.
+
+## References
+
+-   ServiceNow REST API reference:
+    https://developer.servicenow.com/dev.do#!/reference/api
+-   ServiceNow Table API documentation: https://www.servicenow.com/docs/
+-   Postman scripting documentation:
+    https://learning.postman.com/docs/tests-and-scripts/write-scripts/intro-to-scripts/
+-   OAuth 2.0 overview (RFC 6749):
+    https://www.rfc-editor.org/rfc/rfc6749
